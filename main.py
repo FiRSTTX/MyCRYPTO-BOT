@@ -16,8 +16,10 @@ RISK_PER_TRADE = 0.02 # ความเสี่ยง 2%
 MAX_LEVERAGE = 10     # Leverage สูงสุด
 
 # Secrets
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+# ใส่ Token ในเครื่องหมาย ' '
+TELEGRAM_TOKEN = '8524742326:AAG41qwiKCr9HYzQXzCf0bAooaOAwzqg75k' 
+# ใส่ Chat ID ในเครื่องหมาย ' '
+TELEGRAM_CHAT_ID = '1623135330'
 GDRIVE_API_CREDENTIALS = os.environ.get('GDRIVE_API_CREDENTIALS')
 
 # Exchange (Kraken Spot)
@@ -171,3 +173,4 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
     print("✅ Done.")
+
