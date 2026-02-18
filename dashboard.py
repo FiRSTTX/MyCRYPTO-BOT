@@ -61,10 +61,17 @@ if not df.empty:
                          color='Result', color_discrete_map={'Win':'green', 'Loss':'red'})
         st.plotly_chart(fig_pie)
 
-    with col_right:
+   with col_right:
         st.subheader("Signals by Coin")
-        fig_bar = px.bar(df['Symbol'].value_counts().reset_index(), x='index', y='Symbol', 
-                         labels={'index': 'Coin', 'Symbol': 'Count'}, color='index')
+        
+        # 1. เตรียมข้อมูลก่อน (เพื่อความชัวร์เรื่องชื่อคอลัมน์)
+        symbol_counts = df['Symbol'].value_counts().reset_index()
+        symbol_counts.columns = ['Symbol', 'Count'] # บังคับตั้งชื่อใหม่เลย กันพลาด
+        
+        # 2. วาดกราฟ
+        fig_bar = px.bar(symbol_counts, x='Symbol', y='Count', 
+                         labels={'Symbol': 'Coin', 'Count': 'Number of Signals'}, 
+                         color='Symbol')
         st.plotly_chart(fig_bar)
 
     # 3. Data Table (ตารางข้อมูล)
