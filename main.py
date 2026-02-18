@@ -2,44 +2,35 @@ import ccxt
 import pandas as pd
 import requests
 import os
+import sys
 import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+
 # ==========================================
-# ⚙️ CONFIG: ตั้งค่าพอร์ตของคุณ (สำคัญ!)
+# ⚙️ CONFIG
 # ==========================================
+PORTFOLIO_SIZE = 50   # แก้เป็นเงินพอร์ตจริง (USDT)
+RISK_PER_TRADE = 0.02 # ความเสี่ยง 2%
+MAX_LEVERAGE = 10     # Leverage สูงสุด
 
-# 1. เงินทุนในพอร์ต Futures ของคุณ (USDT)
-PORTFOLIO_SIZE = 50  # สมมติมี 1,000 USDT (แก้เป็นของจริงได้เลย)
-
-# 2. ความเสี่ยงที่ยอมรับได้ต่อไม้ (แนะนำ 1-2%)
-RISK_PER_TRADE = 0.02  # 0.02 = 2%
-
-# 3. Leverage สูงสุดที่จะใช้ (เพื่อความปลอดภัย)
-MAX_LEVERAGE = 10      # ไม่เกิน x10
-
-# Telegram (ดึงจาก GitHub Secrets)
+# Secrets
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+GDRIVE_API_CREDENTIALS = os.environ.get('GDRIVE_API_CREDENTIALS')
 
-# ถ้าเทสในคอม ให้เปิดบรรทัดนี้แล้วใส่ Token ตรงๆ
-# TELEGRAM_TOKEN = 'YOUR_TOKEN'
-# TELEGRAM_CHAT_ID = 'YOUR_ID'
-
-# ใช้ Kraken Spot (ไม่โดนบล็อก)
+# Exchange (Kraken Spot)
 exchange = ccxt.kraken({'enableRateLimit': True})
 SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD']
 TIMEFRAME = '1h'
 
 # ==========================================
-# 🧮 INDICATORS (Manual Calculation)
+# 🧮 INDICATORS
 # ==========================================
 def calculate_indicators(df):
-    # 1. EMA 50
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     
-    # 2. ATR 14 (วัดความผันผวน)
     high_low = df['high'] - df['low']
     high_close = (df['high'] - df['close'].shift()).abs()
     low_close = (df['low'] - df['close'].shift()).abs()
@@ -47,7 +38,7 @@ def calculate_indicators(df):
     true_range = ranges.max(axis=1)
     df['atr'] = true_range.ewm(alpha=1/14, adjust=False).mean()
 
-    # 3. RSI 14 (เพิ่มใหม่!)
+    # RSI
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
@@ -57,30 +48,44 @@ def calculate_indicators(df):
     return df
 
 # ==========================================
-# 💰 POSITION SIZING CALCULATOR
+# 💰 POSITION SIZING
 # ==========================================
 def calculate_position(entry_price, stop_loss):
-    # ระยะห่าง SL เป็น %
+    if entry_price == stop_loss: return 0, 1, 0 # กัน Error หาร 0
+    
     sl_percent = abs(entry_price - stop_loss) / entry_price
-    
-    # จำนวนเงินที่ยอมเสียได้ (Risk Amount)
     risk_amount = PORTFOLIO_SIZE * RISK_PER_TRADE
-    
-    # ขนาดไม้ที่ควรเปิด (Position Size in USDT)
     position_value = risk_amount / sl_percent
-    
-    # คำนวณ Leverage ที่เหมาะสม
-    # ถ้า SL กว้าง ต้องใช้ Lev น้อย / ถ้า SL แคบ ใช้ Lev มากได้
-    # แต่ห้ามเกิน MAX_LEVERAGE ที่เราตั้งไว้
     safe_leverage = min(int(1 / sl_percent), MAX_LEVERAGE)
+    if safe_leverage < 1: safe_leverage = 1
     
-    # Margin ที่ต้องวางจริง
     margin_cost = position_value / safe_leverage
-    
     return position_value, safe_leverage, margin_cost
 
 # ==========================================
-# 📡 TELEGRAM SENDER
+# ☁️ GOOGLE SHEETS
+# ==========================================
+def log_to_sheet(timestamp, symbol, side, entry, tp, sl):
+    try:
+        if not GDRIVE_API_CREDENTIALS:
+            print("⚠️ No Google Sheet Credentials")
+            return
+
+        creds_dict = json.loads(GDRIVE_API_CREDENTIALS)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # เปิด Sheet ชื่อ CryptoBot_Logs (ต้องสร้างรอก่อนนะ)
+        sheet = client.open("CryptoBot_Logs").sheet1
+        row = [timestamp, symbol, side, entry, tp, sl, "Waiting"]
+        sheet.append_row(row)
+        print("✅ Sheet Updated")
+    except Exception as e:
+        print(f"❌ Sheet Error: {e}")
+
+# ==========================================
+# 📡 TELEGRAM
 # ==========================================
 def send_telegram(message):
     try:
@@ -88,32 +93,7 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'})
     except: pass
-# ==========================================
-# 📊 GOOGLE SHEETS LOGGER
-# ==========================================
-def log_to_sheet(symbol, side, entry, tp, sl):
-    try:
-        # ดึง Credentials จาก Secret
-        creds_json = os.environ.get('GDRIVE_API_CREDENTIALS')
-        if not creds_json:
-            print("⚠️ No Google Sheet Credentials found.")
-            return
 
-        creds_dict = json.loads(creds_json)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-
-        # เปิด Sheet (ต้องชื่อตรงกับที่คุณตั้ง)
-        sheet = client.open("CryptoBot_Logs").sheet1
-        
-        # บันทึกข้อมูล
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        row = [timestamp, symbol, side, entry, tp, sl, "Waiting"] # Default เป็น Waiting
-        sheet.append_row(row)
-        print("✅ Logged to Google Sheet")
-    except Exception as e:
-        print(f"❌ Sheet Error: {e}")
 # ==========================================
 # 🧠 ANALYSIS LOGIC
 # ==========================================
@@ -124,66 +104,59 @@ def analyze_market(symbol):
         df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
         
-        last = df.iloc[-2] # แท่งจบ
+        last = df.iloc[-2]
         curr_price = last['close']
         
         signal = None
         trend = "SIDEWAY"
         rsi = last['rsi']
         
-        # --- UPTREND LOGIC ---
+        # --- UPTREND ---
         if last['close'] > last['ema50']:
             trend = "UPTREND 🟢"
             dist_to_ema = abs(last['low'] - last['ema50']) / last['ema50'] * 100
-            
-            # เงื่อนไข: Pullback + แท่งเขียว + RSI ไม่ Overbought (<70)
             if dist_to_ema <= 1.5 and last['close'] > last['open'] and rsi < 70:
                 signal = "LONG 🚀"
-                # Stop Loss: ใต้ Swing Low (ATR * 1.5 เพื่อกันโดนสะบัด)
                 stop_loss = last['low'] - (last['atr'] * 1.5)
-                take_profit = curr_price + ((curr_price - stop_loss) * 2) # RR 1:2
+                take_profit = curr_price + ((curr_price - stop_loss) * 2)
 
-        # --- DOWNTREND LOGIC ---
+        # --- DOWNTREND ---
         elif last['close'] < last['ema50']:
             trend = "DOWNTREND 🔴"
             dist_to_ema = abs(last['high'] - last['ema50']) / last['ema50'] * 100
-            
-            # เงื่อนไข: Pullback + แท่งแดง + RSI ไม่ Oversold (>30)
             if dist_to_ema <= 1.5 and last['close'] < last['open'] and rsi > 30:
                 signal = "SHORT 🔻"
-                # Stop Loss: เหนือ Swing High
                 stop_loss = last['high'] + (last['atr'] * 1.5)
                 take_profit = curr_price - ((stop_loss - curr_price) * 2)
 
         # --- ACTION ---
         if signal:
-            # ... (คำนวณ pos_size, lev, margin เหมือนเดิม) ...
+            # 1. คำนวณเงิน
+            pos_size, lev, margin = calculate_position(curr_price, stop_loss)
             
-            # ส่ง Telegram
-            send_telegram(msg)
-            
-            # ✅ บันทึกลง Sheet (เพิ่มบรรทัดนี้)
-            log_to_sheet(symbol, signal, curr_price, take_profit, stop_loss)
-            
+            # 2. สร้างข้อความ (จุดที่เคย Error คือบรรทัดนี้หายไป หรือย่อหน้าผิด)
             msg = (
                 f"🚨 *SIGNAL ALERT: {signal}*\n"
                 f"Coin: #{symbol.split('/')[0]}\n"
                 f"Price: {curr_price}\n"
                 f"RSI: {rsi:.1f}\n"
-                f"----------------------------\n"
-                f"🎯 **PLAN (RR 1:2)**\n"
-                f"Entry: {curr_price} (Market/Limit)\n"
+                f"-------------------\n"
+                f"Entry: {curr_price}\n"
                 f"TP: {take_profit:.4f}\n"
                 f"SL: {stop_loss:.4f}\n"
-                f"----------------------------\n"
-                f"💰 **MONEY MANAGEMENT (Risk 2%)**\n"
-                f"Leverage: x{lev}\n"
-                f"Margin Use: {margin:.2f} USDT\n"
-                f"Total Position: {pos_size:.2f} USDT\n"
-                f"*(เปิดไม้ขนาด {pos_size:.0f} USDT)*"
+                f"-------------------\n"
+                f"Lev: x{lev}\n"
+                f"Size: {pos_size:.1f} USDT"
             )
+            
+            # 3. ส่ง Telegram
             print(f"✅ SIGNAL FOUND: {symbol}")
             send_telegram(msg)
+            
+            # 4. บันทึกลง Sheet
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_to_sheet(now_str, symbol, signal, curr_price, take_profit, stop_loss)
+
         else:
             print(f"   Status: {trend} | RSI: {rsi:.1f} | No Signal")
 
@@ -198,4 +171,3 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
     print("✅ Done.")
-
