@@ -1,1 +1,5 @@
-ccxt pandas requests
+ccxt 
+pandas 
+requests
+gspread
+oauth2client
