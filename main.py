@@ -13,14 +13,16 @@ TELEGRAM_TOKEN = '8524742326:AAG41qwiKCr9HYzQXzCf0bAooaOAwzqg75k'
 TELEGRAM_CHAT_ID = '1623135330' 
 
 # ตั้งค่า Binance
-exchange = ccxt.binance({
+exchange = ccxt.kraken({
     'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
 })
 
 SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 
-    'BNB/USDT', 'XRP/USDT', 'DOGE/USDT'
+    'BTC/USD', 
+    'ETH/USD', 
+    'SOL/USD', 
+    'XRP/USD', 
+    'DOGE/USD'
 ]
 
 TIMEFRAME = '1h'
@@ -114,3 +116,4 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
     print("✅ Done.")
+
