@@ -25,7 +25,4 @@ jobs:
 
     - name: Run Trading Bot
       # ส่วนสำคัญที่สุด! ต้องมีย่อหน้า env ตรงนี้เป๊ะๆ
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: python main.py
