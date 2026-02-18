@@ -1,6 +1,13 @@
-ccxt 
-pandas 
-requests
+streamlit
+pandas
+plotly
 gspread
 oauth2client
-plotly
+
+
+# ccxt 
+# pandas 
+# requests
+# gspread
+# oauth2client
+# plotly
