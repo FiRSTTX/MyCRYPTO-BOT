@@ -2,8 +2,10 @@ import ccxt
 import pandas as pd
 import requests
 import os
-import sys
-
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 # ==========================================
 # ⚙️ CONFIG: ตั้งค่าพอร์ตของคุณ (สำคัญ!)
 # ==========================================
@@ -86,7 +88,32 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'})
     except: pass
+# ==========================================
+# 📊 GOOGLE SHEETS LOGGER
+# ==========================================
+def log_to_sheet(symbol, side, entry, tp, sl):
+    try:
+        # ดึง Credentials จาก Secret
+        creds_json = os.environ.get('GDRIVE_API_CREDENTIALS')
+        if not creds_json:
+            print("⚠️ No Google Sheet Credentials found.")
+            return
 
+        creds_dict = json.loads(creds_json)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+
+        # เปิด Sheet (ต้องชื่อตรงกับที่คุณตั้ง)
+        sheet = client.open("CryptoBot_Logs").sheet1
+        
+        # บันทึกข้อมูล
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = [timestamp, symbol, side, entry, tp, sl, "Waiting"] # Default เป็น Waiting
+        sheet.append_row(row)
+        print("✅ Logged to Google Sheet")
+    except Exception as e:
+        print(f"❌ Sheet Error: {e}")
 # ==========================================
 # 🧠 ANALYSIS LOGIC
 # ==========================================
@@ -130,8 +157,13 @@ def analyze_market(symbol):
 
         # --- ACTION ---
         if signal:
-            # คำนวณความเสี่ยง
-            pos_size, lev, margin = calculate_position(curr_price, stop_loss)
+            # ... (คำนวณ pos_size, lev, margin เหมือนเดิม) ...
+            
+            # ส่ง Telegram
+            send_telegram(msg)
+            
+            # ✅ บันทึกลง Sheet (เพิ่มบรรทัดนี้)
+            log_to_sheet(symbol, signal, curr_price, take_profit, stop_loss)
             
             msg = (
                 f"🚨 *SIGNAL ALERT: {signal}*\n"
@@ -166,3 +198,4 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
     print("✅ Done.")
+
