@@ -3,7 +3,7 @@ pandas
 plotly
 gspread
 oauth2client
-
+numpy
 
 # ccxt 
 # pandas 
