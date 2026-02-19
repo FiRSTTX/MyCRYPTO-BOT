@@ -25,5 +25,8 @@ jobs:
 
     - name: Run Trading Bot
       env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }} 
         GDRIVE_API_CREDENTIALS: ${{ secrets.GDRIVE_API_CREDENTIALS }}
+        PROXY_URL: ${{ secrets.PROXY_URL }}
       run: python main.py
