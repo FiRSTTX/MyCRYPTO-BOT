@@ -47,8 +47,7 @@ if PROXY_URL:
         'http': PROXY_URL,
         'https': PROXY_URL,
     }
-})
-
+exchange = ccxt.okx(config)    
 # 🛠️ เปิดโหมด Demo (ถ้าจะเทรดจริงให้ลบบรรทัดนี้ทิ้ง หรือแก้เป็น False)
 exchange.set_sandbox_mode(True) 
 
@@ -202,3 +201,4 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
         time.sleep(1)
+
