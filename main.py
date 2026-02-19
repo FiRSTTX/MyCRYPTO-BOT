@@ -35,6 +35,7 @@ config = {
     'secret': OKX_SECRET,
     'password': OKX_PASSWORD,
     'enableRateLimit': True,
+    'timeout': 30000,
     'options': {
         'defaultType': 'swap',
     }
@@ -50,7 +51,7 @@ if PROXY_URL:
 exchange = ccxt.okx(config)    
 # 🛠️ เปิดโหมด Demo (ถ้าจะเทรดจริงให้ลบบรรทัดนี้ทิ้ง หรือแก้เป็น False)
 exchange.set_sandbox_mode(True) 
-
+exchange.verbose = True
 # คู่เหรียญสำหรับ Futures (ต้องลงท้ายด้วย :USDT)
 SYMBOLS = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'DOGE/USDT:USDT', 'XRP/USDT:USDT']
 TIMEFRAME = '1h'
@@ -205,6 +206,7 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
         time.sleep(1)
+
 
 
 
