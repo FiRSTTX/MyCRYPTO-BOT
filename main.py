@@ -197,8 +197,13 @@ def analyze_market(symbol):
         print(f"❌ Error {symbol}: {e}")
 
 if __name__ == "__main__":
-    print(f"🤖 OKX Bot Started (Sandbox: {exchange.sandbox_mode})")
+    # บังคับเปิด Sandbox Mode ตรงนี้เลยเพื่อความชัวร์
+    exchange.set_sandbox_mode(True) 
+    
+    print("🤖 OKX Bot Started (Sandbox: Active)") # <-- แก้ข้อความตรงนี้ให้เป็น text ธรรมดา
+    
     for coin in SYMBOLS:
         analyze_market(coin)
         time.sleep(1)
+
 
