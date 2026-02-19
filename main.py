@@ -13,7 +13,7 @@ from datetime import datetime
 # ==========================================
 # ⚙️ CONFIG (OKX EDITION)
 # ==========================================
-PORTFOLIO_SIZE = 50         # เงินทุน (USDT)
+PORTFOLIO_SIZE = 100         # เงินทุน (USDT)
 RISK_PER_TRADE = 0.02       # ความเสี่ยง 2%
 MAX_LEVERAGE_LIMIT = 10     # Leverage สูงสุด
 RR_RATIO = 1.5              # Risk:Reward 1:1.5
@@ -205,5 +205,6 @@ if __name__ == "__main__":
     for coin in SYMBOLS:
         analyze_market(coin)
         time.sleep(1)
+
 
 
