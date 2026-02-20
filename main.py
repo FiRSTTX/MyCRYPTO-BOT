@@ -2,214 +2,279 @@ import ccxt
 import pandas as pd
 import requests
 import os
-import sys
 import json
 import time
 import numpy as np
+from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
 
 # ==========================================
-# ⚙️ CONFIG (ตั้งค่าส่วนตัว)
+# 1. CONFIGURATION
 # ==========================================
-PORTFOLIO_SIZE = 50         # เงินทุนในพอร์ต (USDT)
-RISK_PER_TRADE = 0.02       # ยอมขาดทุน 2% ต่อไม้
-MAX_LEVERAGE_LIMIT = 10     # Leverage สูงสุดที่จะยอมใช้
-RR_RATIO = 1.5              # Risk:Reward Ratio (เสีย 1 ได้ 1.5)
 
-# 🔑 Secrets (Telegram & Google Drive)
-TELEGRAM_TOKEN = '8524742326:AAG41qwiKCr9HYzQXzCf0bAooaOAwzqg75k' 
-TELEGRAM_CHAT_ID = '1623135330'
-GDRIVE_API_CREDENTIALS = os.environ.get('GDRIVE_API_CREDENTIALS')
+# การบริหารเงินทุน (Risk Management)
+STOP_LOSS_PCT = 0.02  # ตั้ง SL ห่างจากราคาเข้า 2%
+RR_RATIO = 1.5        # Risk:Reward = 1:1.5 (TP จะเป็น 3%)
 
-# 💱 Exchange Config (Kraken Spot)
-exchange = ccxt.kraken({'enableRateLimit': True})
-SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD']
+# คู่เหรียญและ Timeframe
+SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD'] # Kraken มักใช้ USD แทน USDT ในคู่หลัก
 TIMEFRAME = '1h'
 
-# ==========================================
-# 🧮 INDICATORS & MATH
-# ==========================================
-def calculate_indicators(df):
-    # 1. EMA Trend Filter
-    df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+# ไฟล์เก็บข้อมูล
+SIGNAL_FILE = "signals.csv"
 
-    # 2. RSI
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+# Credentials (ดึงจาก Environment Variables เพื่อความปลอดภัย)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GDRIVE_API_CREDENTIALS = os.environ.get("GDRIVE_API_CREDENTIALS")
 
-    # 3. MACD (12, 26, 9)
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    df['macd'] = exp1 - exp2
-    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-    df['hist'] = df['macd'] - df['signal']
-
-    # 4. Swing High/Low (สำหรับหา SL และ Fibonacci ในรอบ 20 แท่ง)
-    df['swing_low'] = df['low'].rolling(window=20).min()
-    df['swing_high'] = df['high'].rolling(window=20).max()
-
-    return df
-
-def get_fib_level(high, low, level):
-    return high - ((high - low) * level)
+# ตั้งค่า Exchange: KRAKEN
+exchange = ccxt.kraken({
+    'enableRateLimit': True,
+    # 'apiKey': 'YOUR_API_KEY', # ใส่ถ้าต้องการเทรดจริง
+    # 'secret': 'YOUR_SECRET',
+})
 
 # ==========================================
-# 🛡️ RISK MANAGEMENT
+# 2. HELPER FUNCTIONS (Telegram & Sheets)
 # ==========================================
-def calculate_position_size(entry_price, stop_loss):
-    # หาระยะ Stop Loss เป็น %
-    sl_distance = abs(entry_price - stop_loss)
-    sl_percent = sl_distance / entry_price
 
-    if sl_percent == 0: return 0, 1, 0, 0 # กัน Error หาร 0
+def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
 
-    # คำนวณเงินที่ยอมเสียได้ (Risk Amount)
-    risk_amount = PORTFOLIO_SIZE * RISK_PER_TRADE
-
-    # คำนวณขนาด Position ทั้งหมด (Notional Value)
-    position_size_usd = risk_amount / sl_percent
-
-    # คำนวณ Leverage ที่ปลอดภัย (จุด Liquidation ไกลกว่า SL เสมอ)
-    safe_leverage = int(1 / (sl_percent * 1.5))
-    final_leverage = min(safe_leverage, MAX_LEVERAGE_LIMIT)
-    if final_leverage < 1: final_leverage = 1
-
-    # คำนวณ Margin (เงินต้นที่ต้องวางจริง)
-    margin_cost = position_size_usd / final_leverage
-
-    return position_size_usd, final_leverage, margin_cost, sl_percent * 100
-
-# ==========================================
-# ☁️ GOOGLE SHEETS LOGGING
-# ==========================================
-def log_to_sheet(timestamp, symbol, side, entry, tp, sl):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        if not GDRIVE_API_CREDENTIALS:
-            print("⚠️ No Google Sheet Credentials (Skip Logging)")
-            return
+        requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg
+        }, timeout=10)
+    except Exception as e:
+        print(f"Error sending Telegram: {e}")
 
+def log_to_sheet(row):
+    if not GDRIVE_API_CREDENTIALS:
+        return
+
+    try:
         creds_dict = json.loads(GDRIVE_API_CREDENTIALS)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        sheet = client.open("CryptoBot_Logs").sheet1
-        row = [timestamp, symbol, side, entry, tp, sl, "Waiting"]
+        # เปิดชีทชื่อ CryptoBot (ต้องสร้างไฟล์ชื่อนี้รอไว้ใน Google Drive)
+        sheet = client.open("CryptoBot").sheet1
         sheet.append_row(row)
-        print("✅ Sheet Updated")
+        print("Logged to Google Sheet successfully.")
     except Exception as e:
-        print(f"❌ Sheet Error: {e}")
+        print(f"Error logging to Sheet: {e}")
 
 # ==========================================
-# 📡 TELEGRAM NOTIFICATION
+# 3. TECHNICAL INDICATORS
 # ==========================================
-def send_telegram(message):
-    try:
-        if not TELEGRAM_TOKEN: return
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'})
-    except Exception as e:
-        print(f"❌ Telegram Error: {e}")
 
-# ==========================================
-# 🧠 CORE LOGIC (CONFLUENCE STRATEGY)
-# ==========================================
-def analyze_market(symbol):
-    try:
-        print(f"🔍 Checking {symbol}...")
-        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=300)
-        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = calculate_indicators(df)
-        
-        last = df.iloc[-1]   # แท่งปัจจุบัน
-        prev = df.iloc[-2]   # แท่งก่อนหน้า (ใช้ยืนยันสัญญาณ)
-        curr_price = last['close']
+def indicators(df):
+    # EMA
+    df['ema50'] = df['close'].ewm(span=50).mean()
+    df['ema200'] = df['close'].ewm(span=200).mean()
 
-        signal = None
-        setup_reason = ""
-        stop_loss = 0
-        take_profit = 0
-        
-        # ดึงค่า Fibonacci จาก Swing ล่าสุด
-        recent_high = df['swing_high'].iloc[-2]
-        recent_low = df['swing_low'].iloc[-2]
-        fib_05 = get_fib_level(recent_high, recent_low, 0.5)
-
-        # 🟢 LONG CONDITIONS
-        if (prev['close'] > prev['ema200']) and (prev['close'] > prev['ema50']):
-            if (prev['rsi'] > 40 and prev['rsi'] < 70):
-                if (prev['macd'] > prev['signal']):  
-                     if (curr_price >= fib_05):      
-                        signal = "LONG 🚀"
-                        stop_loss = recent_low * 0.995 
-                        risk_dist = curr_price - stop_loss
-                        take_profit = curr_price + (risk_dist * RR_RATIO)
-                        setup_reason = "Trend Up + MACD Cross + Above Fib 0.5"
-
-        # 🔴 SHORT CONDITIONS
-        elif (prev['close'] < prev['ema200']) and (prev['close'] < prev['ema50']):
-             if (prev['rsi'] < 60 and prev['rsi'] > 30):
-                if (prev['macd'] < prev['signal']):  
-                    if (curr_price <= fib_05):       
-                        signal = "SHORT 🔻"
-                        stop_loss = recent_high * 1.005
-                        risk_dist = stop_loss - curr_price
-                        take_profit = curr_price - (risk_dist * RR_RATIO)
-                        setup_reason = "Trend Down + MACD Cross + Below Fib 0.5"
-
-        # 🎯 ACTION & EXECUTION
-        if signal:
-            pos_size, leverage, margin, sl_pct = calculate_position_size(curr_price, stop_loss)
-            
-            msg = (
-                f"🚨 *CONFLUENCE SIGNAL: {signal}*\n"
-                f"Coin: #{symbol.split('/')[0]}\n"
-                f"Price: {curr_price:.4f}\n"
-                f"Reason: {setup_reason}\n"
-                f"----------------------------\n"
-                f"🛡️ *Risk Management*\n"
-                f"Entry: {curr_price:.4f}\n"
-                f"TP: {take_profit:.4f} (RR 1:{RR_RATIO})\n"
-                f"SL: {stop_loss:.4f} (-{sl_pct:.2f}%)\n"
-                f"Max Risk: ${PORTFOLIO_SIZE * RISK_PER_TRADE:.2f}\n"
-                f"----------------------------\n"
-                f"⚡ *Execution Setup*\n"
-                f"Lev: x{leverage}\n"
-                f"Margin Use: ${margin:.2f}\n"
-                f"Position Size: ${pos_size:.2f}"
-            )
-            
-            print(f"✅ SIGNAL FOUND: {signal} on {symbol}")
-            send_telegram(msg)
-            
-            # บันทึกลง Google Sheets
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_to_sheet(now_str, symbol, signal, curr_price, take_profit, stop_loss)
-            
-        else:
-            print(f"   Status: No Signal | RSI: {prev['rsi']:.1f}")
-
-    except Exception as e:
-        print(f"❌ Error analysis {symbol}: {e}")
-
-# ==========================================
-# 🚀 MAIN RUNNER
-# ==========================================
-if __name__ == "__main__":
-    print("========================================")
-    print(f"🤖 Bot V2 Started | Confluence + Risk Mgmt")
-    print(f"💼 Port: ${PORTFOLIO_SIZE} | Risk: {RISK_PER_TRADE*100}% | Max Lev: x{MAX_LEVERAGE_LIMIT}")
-    print("========================================")
+    # RSI (Standard Wilder's Smoothing)
+    delta = df['close'].diff()
     
-    for coin in SYMBOLS:
-        analyze_market(coin)
-        time.sleep(1) # พัก 1 วินาทีป้องกัน Rate Limit จาก Exchange
+    # แยกกำไร/ขาดทุน
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    # ใช้ ewm แทน rolling เพื่อความแม่นยำแบบ TradingView
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    return df
+
+# ==========================================
+# 4. SIGNAL MANAGEMENT (CSV)
+# ==========================================
+
+def save_signal(data):
+    df = pd.DataFrame([data])
+    if os.path.exists(SIGNAL_FILE):
+        df.to_csv(SIGNAL_FILE, mode='a', header=False, index=False)
+    else:
+        df.to_csv(SIGNAL_FILE, index=False)
+
+def check_open_orders(symbol):
+    """เช็คว่ามีออเดอร์ของเหรียญนี้ค้างอยู่หรือไม่"""
+    if not os.path.exists(SIGNAL_FILE):
+        return False
+    
+    try:
+        df = pd.read_csv(SIGNAL_FILE)
+        # กรองดูว่ามี symbol นี้ และ status เป็น OPEN หรือไม่
+        open_trades = df[(df['symbol'] == symbol) & (df['status'] == 'OPEN')]
+        return not open_trades.empty
+    except pd.errors.EmptyDataError:
+        return False
+
+def update_signals():
+    """เช็คราคาปัจจุบันเพื่อตัด TP/SL"""
+    if not os.path.exists(SIGNAL_FILE):
+        return
+
+    try:
+        df = pd.read_csv(SIGNAL_FILE)
+        if df.empty: return
+    except:
+        return
+
+    updated = False
+
+    for i, row in df.iterrows():
+        if row['status'] != "OPEN":
+            continue
+
+        symbol = row['symbol']
         
-    print("========================================")
-    print("✅ All pairs checked. Done.")
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+        except Exception as e:
+            print(f"Error fetching ticker for {symbol}: {e}")
+            continue
+
+        # Logic การตัด TP/SL
+        new_status = None
+        
+        if row['side'] == "LONG":
+            if current_price >= row['tp']:
+                new_status = "TP"
+            elif current_price <= row['sl']:
+                new_status = "SL"
+
+        elif row['side'] == "SHORT":
+            if current_price <= row['tp']:
+                new_status = "TP"
+            elif current_price >= row['sl']:
+                new_status = "SL"
+
+        # ถ้าสถานะเปลี่ยน ให้บันทึกและแจ้งเตือน
+        if new_status:
+            df.at[i, 'status'] = new_status
+            updated = True
+            msg = f"⚠ CLOSE {symbol} ({row['side']})\nResult: {new_status}\nPrice: {current_price}"
+            print(msg)
+            send_telegram(msg)
+
+    if updated:
+        df.to_csv(SIGNAL_FILE, index=False)
+
+# ==========================================
+# 5. ANALYSIS CORE
+# ==========================================
+
+def analyze(symbol):
+    print(f"Analyzing {symbol}...")
+
+    # 1. เช็คก่อนว่ามีออเดอร์ค้างไหม (ป้องกัน Signal ซ้ำ)
+    if check_open_orders(symbol):
+        print(f"Skipping {symbol}: Position already OPEN.")
+        return
+
+    try:
+        # ดึงกราฟย้อนหลัง
+        bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
+        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # คำนวณอินดิเคเตอร์
+        df = indicators(df)
+
+        last = df.iloc[-1]  # แท่งปัจจุบัน
+        prev = df.iloc[-2]  # แท่งก่อนหน้า (ที่จบแท่งแล้ว)
+
+        price = last['close']
+        signal = None
+
+        # --- STRATEGY LOGIC ---
+        # Long: ราคาปิดเหนือ EMA200 และ RSI > 50
+        if prev['close'] > prev['ema200'] and prev['rsi'] > 50:
+            signal = "LONG"
+
+        # Short: ราคาปิดต่ำกว่า EMA200 และ RSI < 50
+        if prev['close'] < prev['ema200'] and prev['rsi'] < 50:
+            signal = "SHORT"
+        
+        if not signal:
+            return
+
+        # --- RISK CALCULATION ---
+        # คำนวณ TP/SL ตาม Config
+        if signal == "LONG":
+            sl = price * (1 - STOP_LOSS_PCT)
+            tp = price * (1 + (STOP_LOSS_PCT * RR_RATIO))
+        elif signal == "SHORT":
+            sl = price * (1 + STOP_LOSS_PCT)
+            tp = price * (1 - (STOP_LOSS_PCT * RR_RATIO))
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # เตรียมข้อมูลบันทึก
+        data = {
+            "time": now,
+            "symbol": symbol,
+            "side": signal,
+            "entry": price,
+            "tp": round(tp, 4), # ปัดเศษเพื่อความสวยงาม
+            "sl": round(sl, 4),
+            "status": "OPEN"
+        }
+
+        # บันทึก CSV
+        save_signal(data)
+
+        # ส่ง Telegram
+        msg = f"🚀 NEW SIGNAL: {signal}\n\nSymbol: {symbol}\nEntry: {price}\nTP: {data['tp']}\nSL: {data['sl']}\nTime: {TIMEFRAME}"
+        send_telegram(msg)
+
+        # บันทึก Google Sheet
+        log_to_sheet([
+            str(now), symbol, signal, price, data['tp'], data['sl'], "OPEN"
+        ])
+
+    except Exception as e:
+        print(f"Error analyzing {symbol}: {e}")
+
+# ==========================================
+# 6. MAIN LOOP
+# ==========================================
+
+def run():
+    print("--- Bot Started (Kraken) ---")
+    while True:
+        try:
+            # 1. อัปเดตสถานะออเดอร์เก่า (Check TP/SL)
+            update_signals()
+
+            # 2. หาจังหวะเข้าออเดอร์ใหม่
+            for s in SYMBOLS:
+                analyze(s)
+                time.sleep(1) # พักเล็กน้อยระหว่างเหรียญ
+
+            # 3. รอเวลาก่อนวนรอบใหม่ (เช่น ทุก 1 นาที)
+            print("Waiting for next cycle...")
+            time.sleep(60) 
+
+        except KeyboardInterrupt:
+            print("Bot stopped by user.")
+            break
+        except Exception as e:
+            print(f"Global Error: {e}")
+            time.sleep(10) # ถ้า Error ให้พัก 10 วิแล้วลองใหม่
+
+if __name__ == "__main__":
+    run()
