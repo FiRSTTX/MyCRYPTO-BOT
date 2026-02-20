@@ -4,6 +4,7 @@ import requests
 import os
 import json
 import time
+import pytz
 import numpy as np
 from datetime import datetime
 import gspread
@@ -176,7 +177,9 @@ def analyze(symbol):
             margin_use = 2
             position_size_usd = margin_use * LEVERAGE
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # --- เปลี่ยนเวลาเป็น BANGKOK ---
+        bkk_tz = pytz.timezone('Asia/Bangkok')
+        now = datetime.now(bkk_tz).strftime("%Y-%m-%d %H:%M:%S")
         
         data = {
             "time": now, "symbol": symbol, "side": signal, "entry": price,
@@ -226,3 +229,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
