@@ -10,35 +10,26 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ==========================================
-# 1. CONFIGURATION (ปรับปรุงใหม่)
+# CONFIG & SETUP
 # ==========================================
-
-# --- การตั้งค่าความเสี่ยง (Money Management) ---
-ACCOUNT_BALANCE = 1000  # สมมติเงินในพอร์ต $1,000 (ใช้คำนวณ Position Sizing)
-RISK_PER_TRADE_USD = 10 # ยอมเสียได้ $10 ต่อไม้ (Fix Risk)
-LEVERAGE = 10           # เลเวอเรจ x10
-
-# RR Ratio
+ACCOUNT_BALANCE = 50  
+RISK_PER_TRADE_USD = 10 
+LEVERAGE = 10           
 RR_RATIO = 1.5
-STOP_LOSS_PCT = 0.02    # ระยะ SL 2%
+STOP_LOSS_PCT = 0.02    
 
-# คู่เหรียญและ Timeframe
 SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD']
 TIMEFRAME = '1h'
-
 SIGNAL_FILE = "signals.csv"
 
-# Credentials
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GDRIVE_API_CREDENTIALS = os.environ.get("GDRIVE_API_CREDENTIALS")
 
-exchange = ccxt.kraken({
-    'enableRateLimit': True,
-})
+exchange = ccxt.kraken({'enableRateLimit': True})
 
 # ==========================================
-# 2. HELPER FUNCTIONS
+# FUNCTIONS
 # ==========================================
 
 def send_telegram(msg):
@@ -59,11 +50,7 @@ def log_to_sheet(row):
         sheet = client.open("CryptoBot").sheet1
         sheet.append_row(row)
     except Exception as e:
-        print(f"Error logging to Sheet: {e}")
-
-# ==========================================
-# 3. INDICATORS
-# ==========================================
+        print(f"Error Sheet: {e}")
 
 def indicators(df):
     df['ema50'] = df['close'].ewm(span=50).mean()
@@ -77,16 +64,19 @@ def indicators(df):
     df['rsi'] = 100 - (100 / (1 + rs))
     return df
 
-# ==========================================
-# 4. SIGNAL MANAGEMENT
-# ==========================================
-
 def save_signal(data):
     df = pd.DataFrame([data])
     if os.path.exists(SIGNAL_FILE):
         df.to_csv(SIGNAL_FILE, mode='a', header=False, index=False)
     else:
         df.to_csv(SIGNAL_FILE, index=False)
+
+def check_open_orders(symbol):
+    if not os.path.exists(SIGNAL_FILE): return False
+    try:
+        df = pd.read_csv(SIGNAL_FILE)
+        return not df[(df['symbol'] == symbol) & (df['status'] == 'OPEN')].empty
+    except: return False
 
 def update_signals():
     if not os.path.exists(SIGNAL_FILE): return
@@ -102,42 +92,30 @@ def update_signals():
         symbol = row['symbol']
         try:
             ticker = exchange.fetch_ticker(symbol)
-            current_price = ticker['last']
+            curr_price = ticker['last']
         except: continue
 
         new_status = None
         if row['side'] == "LONG":
-            if current_price >= row['tp']: new_status = "TP"
-            elif current_price <= row['sl']: new_status = "SL"
+            if curr_price >= row['tp']: new_status = "TP"
+            elif curr_price <= row['sl']: new_status = "SL"
         elif row['side'] == "SHORT":
-            if current_price <= row['tp']: new_status = "TP"
-            elif current_price >= row['sl']: new_status = "SL"
+            if curr_price <= row['tp']: new_status = "TP"
+            elif curr_price >= row['sl']: new_status = "SL"
 
         if new_status:
             df.at[i, 'status'] = new_status
             updated = True
-            # ส่งแจ้งเตือนปิดออเดอร์
             emoji = "✅" if new_status == "TP" else "❌"
-            msg = f"{emoji} <b>CLOSE SIGNAL</b>\nCoin: {symbol}\nResult: <b>{new_status}</b>\nPrice: {current_price}"
+            msg = f"{emoji} <b>POSITION CLOSED</b>\nCoin: {symbol}\nSide: {row['side']}\nResult: <b>{new_status}</b>\nPrice: {curr_price}"
             send_telegram(msg)
 
     if updated: df.to_csv(SIGNAL_FILE, index=False)
 
-def check_open_orders(symbol):
-    if not os.path.exists(SIGNAL_FILE): return False
-    try:
-        df = pd.read_csv(SIGNAL_FILE)
-        return not df[(df['symbol'] == symbol) & (df['status'] == 'OPEN')].empty
-    except: return False
-
-# ==========================================
-# 5. ANALYSIS CORE (หัวใจหลักที่แก้ใหม่)
-# ==========================================
-
 def analyze(symbol):
     print(f"Analyzing {symbol}...")
     if check_open_orders(symbol):
-        print(f"Skipping {symbol}: Position already OPEN.")
+        print(f"Skipping {symbol}: Open position exists.")
         return
 
     try:
@@ -151,95 +129,74 @@ def analyze(symbol):
         signal = None
         reason = ""
 
-        # --- LOGIC ---
         if prev['close'] > prev['ema200'] and prev['rsi'] > 50:
             signal = "LONG"
-            reason = "Price > EMA200 + RSI Bullish"
+            reason = "Price > EMA200 + RSI Bull"
 
         if prev['close'] < prev['ema200'] and prev['rsi'] < 50:
             signal = "SHORT"
-            reason = "Price < EMA200 + RSI Bearish"
+            reason = "Price < EMA200 + RSI Bear"
         
         if not signal: return
 
-        # --- MONEY MANAGEMENT CALCULATION ---
-        # 1. คำนวณราคา TP/SL
+        # Money Management
         if signal == "LONG":
             sl = price * (1 - STOP_LOSS_PCT)
             tp = price * (1 + (STOP_LOSS_PCT * RR_RATIO))
-        elif signal == "SHORT":
+        else:
             sl = price * (1 + STOP_LOSS_PCT)
             tp = price * (1 - (STOP_LOSS_PCT * RR_RATIO))
 
-        # 2. คำนวณ Position Sizing (สูตร: Risk $ / ระยะ SL %)
-        sl_distance_pct = abs(price - sl) / price
-        position_size_usd = RISK_PER_TRADE_USD / sl_distance_pct
-        
-        # 3. คำนวณ Margin ที่ต้องใช้จริง
-        margin_use = position_size_usd / LEVERAGE
+        sl_pct = abs(price - sl) / price
+        pos_size = RISK_PER_TRADE_USD / sl_pct
+        margin = pos_size / LEVERAGE
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # --- DATA PREPARATION ---
+        
         data = {
-            "time": now,
-            "symbol": symbol,
-            "side": signal,
-            "entry": price,
-            "tp": round(tp, 4),
-            "sl": round(sl, 4),
-            "status": "OPEN",
-            "leverage": LEVERAGE,
-            "margin": round(margin_use, 2),
-            "position_size": round(position_size_usd, 2),
-            "reason": reason
+            "time": now, "symbol": symbol, "side": signal, "entry": price,
+            "tp": round(tp, 4), "sl": round(sl, 4), "status": "OPEN",
+            "leverage": LEVERAGE, "margin": round(margin, 2),
+            "position_size": round(pos_size, 2), "reason": reason
         }
-
         save_signal(data)
 
-        # --- TELEGRAM MESSAGE FORMAT (ตามรูปตัวอย่าง) ---
+        # --- TELEGRAM FORMAT (แก้ไขส่วนนี้) ---
+        side_emoji = "🟢" if signal == "LONG" else "🔴"
+        
         msg = f"""
+{side_emoji} <b>{signal} SIGNAL</b> 
 Coin: <b>#{symbol.split('/')[0]}</b>
 Price: {price}
 Reason: {reason}
 -----------------------------
 🛡️ <b>Risk Management</b>
-Entry: {price}
-TP: {round(tp, 4)} (RR 1:{RR_RATIO})
-SL: {round(sl, 4)} ({STOP_LOSS_PCT*100}%)
+TP: {round(tp, 4)}
+SL: {round(sl, 4)} ({round(STOP_LOSS_PCT*100, 2)}%)
 Max Risk: ${RISK_PER_TRADE_USD}
 -----------------------------
 ⚡ <b>Execution Setup</b>
 Lev: x{LEVERAGE}
-Margin Use: ${round(margin_use, 2)}
-Position Size: ${round(position_size_usd, 2)}
+Margin: ${round(margin, 2)}
+Size: ${round(pos_size, 2)}
 """
         send_telegram(msg)
 
-        # Log to Sheet (เพิ่มคอลัมน์ใหม่ต่อท้าย)
-        log_to_sheet([
-            str(now), symbol, signal, price, data['tp'], data['sl'], "OPEN",
-            LEVERAGE, data['margin'], data['position_size'], reason
-        ])
+        log_to_sheet([str(now), symbol, signal, price, data['tp'], data['sl'], "OPEN", LEVERAGE, margin, pos_size, reason])
 
     except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
-        # raise e # uncomment for debug
-
-# ==========================================
-# 6. RUN
-# ==========================================
+        print(f"Error {symbol}: {e}")
 
 def run():
-    print("--- Bot Started (Rich Notification) ---")
+    print("--- Bot Started ---")
     try:
         update_signals()
         for s in SYMBOLS:
             analyze(s)
             time.sleep(1)
-        print("--- Job Finished ---")
+        print("--- Finished ---")
     except Exception as e:
-        print(f"Global Error: {e}")
+        print(f"Error: {e}")
         raise e
 
 if __name__ == "__main__":
