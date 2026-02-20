@@ -1,0 +1,4 @@
+time,symbol,side,entry,tp,sl,status,leverage,margin,position_size,reason
+2026-02-20 18:36:09,BTC/USD,LONG,67538.0,69564.14,66187.24,OPEN,10,50.0,500.0,Price > EMA200 + RSI Bullish
+2026-02-20 18:36:12,ETH/USD,LONG,1961.68,2020.5304,1922.4464,OPEN,10,50.0,500.0,Price > EMA200 + RSI Bullish
+2026-02-20 18:36:15,SOL/USD,LONG,84.42,86.9526,82.7316,OPEN,10,50.0,500.0,Price > EMA200 + RSI Bullish
