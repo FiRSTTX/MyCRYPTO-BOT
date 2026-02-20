@@ -6,6 +6,8 @@ oauth2client
 numpy
 flask
 requests
+json
+os
 
 # ccxt 
 # pandas 
