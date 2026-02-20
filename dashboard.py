@@ -1,21 +1,52 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
-# --- SETUP & CSS ---
-st.set_page_config(page_title="Crypto Bot AI", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+# --- 1. SETUP & THEME ---
+st.set_page_config(
+    page_title="Crypto Bot AI",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS for Cyberpunk/Pro Look
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap');
-        .stApp { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); font-family: 'Rajdhani', sans-serif; }
-        h1, h2, h3, p, div { color: white; }
-        div[data-testid="stMetric"] { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 10px; backdrop-filter: blur(5px); }
-        div[data-testid="stMetricValue"] { color: #00f2ff !important; font-size: 24px !important; }
-        div[data-testid="stDataFrame"] { background-color: rgba(0, 0, 0, 0.3); border-radius: 10px; padding: 10px; }
+        
+        .stApp {
+            background-color: #0e1117;
+            font-family: 'Rajdhani', sans-serif;
+        }
+        
+        /* Metric Cards */
+        div[data-testid="stMetric"] {
+            background-color: #1e2130;
+            border: 1px solid #2d3446;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 28px !important;
+            font-weight: 700;
+        }
+        
+        /* Table Headers */
+        thead tr th:first-child {display:none}
+        tbody th {display:none}
+        
+        /* Header */
+        h1, h2, h3 {
+            color: #e0e0e0;
+            letter-spacing: 1px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
-# --- LOAD DATA ---
+# --- 2. DATA LOADING ---
 CSV_URL = "https://raw.githubusercontent.com/FiRSTTX/MyCRYPTO-BOT/main/signals.csv"
 
 @st.cache_data(ttl=60)
@@ -26,50 +57,102 @@ def load_data():
     except:
         return pd.DataFrame()
 
-# --- HEADER ---
-c1, c2 = st.columns([3, 1])
-with c1: st.markdown("# ⚡ Crypto Signal AI")
-with c2: 
-    if st.button('🔄 Sync Data'): st.cache_data.clear(); st.rerun()
+# --- 3. UI LAYOUT ---
+
+# Top Bar
+c1, c2 = st.columns([0.8, 0.2])
+with c1:
+    st.title("⚡ AI TRADING TERMINAL")
+    st.caption("Auto-Trading Bot Control Center | Strategy: EMA200 + RSI")
+with c2:
+    if st.button("🔄 REFRESH DATA", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
 df = load_data()
 
 if df.empty:
-    st.info("Waiting for data...")
+    st.info("Waiting for signals...")
 else:
-    # --- METRICS ---
+    # --- 4. METRICS ROW ---
     total = len(df)
-    opens = len(df[df['status'] == 'OPEN'])
-    wins = len(df[df['status'] == 'TP'])
+    active = len(df[df['status'] == 'OPEN'])
     
-    # ตรวจสอบว่ามีคอลัมน์ใหม่หรือไม่ (เผื่อไฟล์เก่ายังไม่มี)
-    recent_margin = df.iloc[-1]['margin'] if 'margin' in df.columns else 0
+    # Calculate Winrate
+    closed = df[df['status'].isin(['TP', 'SL'])]
+    wins = len(closed[closed['status'] == 'TP'])
+    losses = len(closed[closed['status'] == 'SL'])
+    winrate = (wins / len(closed) * 100) if len(closed) > 0 else 0
     
+    # Calculate Estimated PnL (สมมติ TP=$15, SL=-$10 ตาม Risk Config)
+    est_pnl = (wins * 15) - (losses * 10) 
+    pnl_color = "normal" if est_pnl >= 0 else "inverse"
+
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Signals", total)
-    m2.metric("Active Trades", opens)
-    m3.metric("Win Count", wins)
-    m4.metric("Last Margin Use", f"${recent_margin}")
+    m1.metric("Total Signals", total, delta=f"{active} Active", delta_color="off")
+    m2.metric("Win Rate", f"{winrate:.1f}%", delta="Target > 50%")
+    m3.metric("Est. Net Profit", f"${est_pnl}", delta_color=pnl_color)
+    m4.metric("Risk per Trade", "$10", "Fixed")
 
-    st.divider()
+    st.markdown("---")
 
-    # --- TABLE ---
-    st.markdown("### 📜 Detailed Log")
+    # --- 5. CHARTS ROW ---
+    col_chart1, col_chart2 = st.columns([1, 2])
     
-    def color_status(val):
-        color = '#00f2ff' if val == 'OPEN' else ('#00ff00' if val == 'TP' else '#ff0055')
-        return f'color: {color}; font-weight: bold;'
+    with col_chart1:
+        st.subheader("📊 Performance")
+        if len(closed) > 0:
+            # Modern Donut Chart
+            fig = go.Figure(data=[go.Pie(
+                labels=['Win', 'Loss'], 
+                values=[wins, losses], 
+                hole=.6,
+                marker_colors=['#00e676', '#ff1744'] # Green/Red Neon
+            )])
+            fig.update_layout(
+                showlegend=True,
+                margin=dict(t=0, b=0, l=0, r=0),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='white'),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No closed trades to analyze yet.")
 
-    # เลือกคอลัมน์ที่จะโชว์
-    show_cols = ['time', 'symbol', 'side', 'entry', 'tp', 'sl', 'status', 'reason', 'margin']
-    # กรองเฉพาะคอลัมน์ที่มีอยู่จริงใน CSV (กัน Error)
-    valid_cols = [c for c in show_cols if c in df.columns]
-    
-    display_df = df[valid_cols].sort_values(by='time', ascending=False)
-    
-    st.dataframe(
-        display_df.style.applymap(color_status, subset=['status']), 
-        use_container_width=True, 
-        height=400,
-        hide_index=True
-    )
+    with col_chart2:
+        st.subheader("📜 Active & Recent Log")
+        
+        # จัดเตรียมข้อมูลตาราง
+        view_df = df[['time', 'symbol', 'side', 'entry', 'margin', 'status', 'reason']].copy()
+        view_df = view_df.sort_values(by='time', ascending=False)
+
+        # ใช้ st.dataframe แบบใหม่ (Column Config) สวยมาก!
+        st.dataframe(
+            view_df,
+            use_container_width=True,
+            height=400,
+            column_config={
+                "time": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm"),
+                "symbol": st.column_config.TextColumn("Coin", help="Trading Pair"),
+                "side": st.column_config.TextColumn("Side"),
+                "entry": st.column_config.NumberColumn("Entry Price", format="$%.2f"),
+                "margin": st.column_config.ProgressColumn(
+                    "Margin Used", 
+                    format="$%.2f", 
+                    min_value=0, 
+                    max_value=20, # ปรับ Max ตามขนาดไม้เฉลี่ยของคุณ
+                ),
+                "status": st.column_config.TextColumn("Status"),
+                "reason": st.column_config.TextColumn("Signal Logic"),
+            },
+            hide_index=True
+        )
+
+# --- 6. FOOTER ---
+st.markdown("""
+    <div style='text-align: center; color: #666; margin-top: 50px; font-size: 12px;'>
+        POWERED BY GITHUB ACTIONS & STREAMLIT | KRAKEN EXCHANGE
+    </div>
+""", unsafe_allow_html=True)
