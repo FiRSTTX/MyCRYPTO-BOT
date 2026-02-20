@@ -250,31 +250,29 @@ def analyze(symbol):
         print(f"Error analyzing {symbol}: {e}")
 
 # ==========================================
-# 6. MAIN LOOP
+# 6. MAIN EXECUTION (แก้ไขใหม่)
 # ==========================================
 
 def run():
-    print("--- Bot Started (Kraken) ---")
-    while True:
-        try:
-            # 1. อัปเดตสถานะออเดอร์เก่า (Check TP/SL)
-            update_signals()
+    print("--- Bot Started (One-time Execution) ---")
+    
+    try:
+        # 1. อัปเดตสถานะออเดอร์เก่า (Check TP/SL)
+        update_signals()
 
-            # 2. หาจังหวะเข้าออเดอร์ใหม่
-            for s in SYMBOLS:
-                analyze(s)
-                time.sleep(1) # พักเล็กน้อยระหว่างเหรียญ
+        # 2. หาจังหวะเข้าออเดอร์ใหม่
+        for s in SYMBOLS:
+            analyze(s)
+            # ไม่ต้อง sleep นาน แค่หน่วงนิดหน่อยกัน API รัวเกินไป
+            time.sleep(1) 
 
-            # 3. รอเวลาก่อนวนรอบใหม่ (เช่น ทุก 1 นาที)
-            print("Waiting for next cycle...")
-            time.sleep(60) 
+        print("--- Job Finished Successfully ---")
 
-        except KeyboardInterrupt:
-            print("Bot stopped by user.")
-            break
-        except Exception as e:
-            print(f"Global Error: {e}")
-            time.sleep(10) # ถ้า Error ให้พัก 10 วิแล้วลองใหม่
+    except Exception as e:
+        print(f"Global Error: {e}")
+        # สำคัญ: ถ้า Error ให้ raise เพื่อให้ GitHub รู้ว่า Job ล้มเหลว
+        raise e 
 
 if __name__ == "__main__":
     run()
+
