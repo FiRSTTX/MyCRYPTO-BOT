@@ -4,6 +4,8 @@ plotly
 gspread
 oauth2client
 numpy
+flask
+requests
 
 # ccxt 
 # pandas 
