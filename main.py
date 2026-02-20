@@ -10,18 +10,20 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ==========================================
-# CONFIG & SETUP
+# CONFIGURATION (สำหรับทุน $50)
 # ==========================================
-ACCOUNT_BALANCE = 50  
-RISK_PER_TRADE_USD = 10 
-LEVERAGE = 10           
-RR_RATIO = 1.5
-STOP_LOSS_PCT = 0.02    
+ACCOUNT_BALANCE = 50        # 💰 เงินทุนของคุณ (ใส่ $50)
+RISK_PCT_PER_TRADE = 0.03   # 📉 ยอมเสี่ยง 3% ต่อไม้ (ทุน $50 = เสี่ยง $1.5)
 
-SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD']
+LEVERAGE = 10               # อัตราทด x10
+RR_RATIO = 1.5              # กำไร 1.5 เท่าของความเสี่ยง
+STOP_LOSS_PCT = 0.02        # ระยะ Stop Loss 2%
+
+SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'DOGE/USD', 'XRP/USD'] # เพิ่มเหรียญได้
 TIMEFRAME = '1h'
 SIGNAL_FILE = "signals.csv"
 
+# Credentials
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GDRIVE_API_CREDENTIALS = os.environ.get("GDRIVE_API_CREDENTIALS")
@@ -75,6 +77,7 @@ def check_open_orders(symbol):
     if not os.path.exists(SIGNAL_FILE): return False
     try:
         df = pd.read_csv(SIGNAL_FILE)
+        # ตรวจสอบว่ามีสถานะ OPEN ของเหรียญนี้อยู่หรือไม่
         return not df[(df['symbol'] == symbol) & (df['status'] == 'OPEN')].empty
     except: return False
 
@@ -107,7 +110,10 @@ def update_signals():
             df.at[i, 'status'] = new_status
             updated = True
             emoji = "✅" if new_status == "TP" else "❌"
-            msg = f"{emoji} <b>POSITION CLOSED</b>\nCoin: {symbol}\nSide: {row['side']}\nResult: <b>{new_status}</b>\nPrice: {curr_price}"
+            # คำนวณกำไร/ขาดทุนจริง (โดยประมาณ)
+            pnl_text = "Profit" if new_status == "TP" else "Loss"
+            
+            msg = f"{emoji} <b>POSITION CLOSED</b>\nCoin: {symbol}\nResult: <b>{new_status}</b> ({pnl_text})\nClose Price: {curr_price}"
             send_telegram(msg)
 
     if updated: df.to_csv(SIGNAL_FILE, index=False)
@@ -129,6 +135,7 @@ def analyze(symbol):
         signal = None
         reason = ""
 
+        # Strategy Logic
         if prev['close'] > prev['ema200'] and prev['rsi'] > 50:
             signal = "LONG"
             reason = "Price > EMA200 + RSI Bull"
@@ -139,7 +146,9 @@ def analyze(symbol):
         
         if not signal: return
 
-        # Money Management
+        # --- 💰 MONEY MANAGEMENT (สูตรใหม่สำหรับทุนน้อย) ---
+        
+        # 1. คำนวณราคา TP/SL
         if signal == "LONG":
             sl = price * (1 - STOP_LOSS_PCT)
             tp = price * (1 + (STOP_LOSS_PCT * RR_RATIO))
@@ -147,21 +156,37 @@ def analyze(symbol):
             sl = price * (1 + STOP_LOSS_PCT)
             tp = price * (1 - (STOP_LOSS_PCT * RR_RATIO))
 
-        sl_pct = abs(price - sl) / price
-        pos_size = RISK_PER_TRADE_USD / sl_pct
-        margin = pos_size / LEVERAGE
+        # 2. คำนวณความเสี่ยงเป็นดอลลาร์ (Risk $)
+        # ทุน $50 * 3% = เสี่ยง $1.5
+        risk_usd = ACCOUNT_BALANCE * RISK_PCT_PER_TRADE 
+
+        # 3. คำนวณขนาดไม้ (Position Size)
+        # สูตร: Risk $ / ระยะ SL % = ขนาด Position ที่ต้องถือ
+        # เช่น $1.5 / 0.02 = $75
+        sl_distance_pct = STOP_LOSS_PCT 
+        position_size_usd = risk_usd / sl_distance_pct
+        
+        # 4. คำนวณ Margin ที่ต้องใช้ (เงินต้นจริง)
+        # $75 / Leverage 10 = $7.5
+        margin_use = position_size_usd / LEVERAGE
+
+        # ตรวจสอบขนาดขั้นต่ำ (Kraken อาจมีขั้นต่ำประมาณ $10-$15 ในบางคู่)
+        # ถ้า Margin น้อยกว่า $2 ให้ขยับขึ้นมาเพื่อให้เทรดได้จริง
+        if margin_use < 2:
+            margin_use = 2
+            position_size_usd = margin_use * LEVERAGE
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         data = {
             "time": now, "symbol": symbol, "side": signal, "entry": price,
             "tp": round(tp, 4), "sl": round(sl, 4), "status": "OPEN",
-            "leverage": LEVERAGE, "margin": round(margin, 2),
-            "position_size": round(pos_size, 2), "reason": reason
+            "leverage": LEVERAGE, "margin": round(margin_use, 2),
+            "position_size": round(position_size_usd, 2), "reason": reason
         }
         save_signal(data)
 
-        # --- TELEGRAM FORMAT (แก้ไขส่วนนี้) ---
+        # --- TELEGRAM MESSAGE ---
         side_emoji = "🟢" if signal == "LONG" else "🔴"
         
         msg = f"""
@@ -170,25 +195,25 @@ Coin: <b>#{symbol.split('/')[0]}</b>
 Price: {price}
 Reason: {reason}
 -----------------------------
-🛡️ <b>Risk Management</b>
+🛡️ <b>Risk Plan (Small Port)</b>
 TP: {round(tp, 4)}
-SL: {round(sl, 4)} ({round(STOP_LOSS_PCT*100, 2)}%)
-Max Risk: ${RISK_PER_TRADE_USD}
+SL: {round(sl, 4)} (Risk {RISK_PCT_PER_TRADE*100}%)
+Max Risk: ${round(risk_usd, 2)}
 -----------------------------
-⚡ <b>Execution Setup</b>
+⚡ <b>Execution</b>
 Lev: x{LEVERAGE}
-Margin: ${round(margin, 2)}
-Size: ${round(pos_size, 2)}
+<b>Margin Use: ${round(margin_use, 2)}</b>
+Size: ${round(position_size_usd, 2)}
 """
         send_telegram(msg)
 
-        log_to_sheet([str(now), symbol, signal, price, data['tp'], data['sl'], "OPEN", LEVERAGE, margin, pos_size, reason])
+        log_to_sheet([str(now), symbol, signal, price, data['tp'], data['sl'], "OPEN", LEVERAGE, margin_use, position_size_usd, reason])
 
     except Exception as e:
         print(f"Error {symbol}: {e}")
 
 def run():
-    print("--- Bot Started ---")
+    print("--- Bot Started (Small Port Logic) ---")
     try:
         update_signals()
         for s in SYMBOLS:
