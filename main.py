@@ -4,23 +4,23 @@ import requests
 import os
 import json
 import time
-import pytz
 import numpy as np
 from datetime import datetime
+import pytz
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ==========================================
-# CONFIGURATION (สำหรับทุน $50)
+# CONFIGURATION
 # ==========================================
-ACCOUNT_BALANCE = 50        # 💰 เงินทุนของคุณ (ใส่ $50)
-RISK_PCT_PER_TRADE = 0.03   # 📉 ยอมเสี่ยง 3% ต่อไม้ (ทุน $50 = เสี่ยง $1.5)
+ACCOUNT_BALANCE = 50        
+RISK_PCT_PER_TRADE = 0.03   
 
-LEVERAGE = 10               # อัตราทด x10
-RR_RATIO = 1.5              # กำไร 1.5 เท่าของความเสี่ยง
-STOP_LOSS_PCT = 0.02        # ระยะ Stop Loss 2%
+LEVERAGE = 10               
+RR_RATIO = 1.5              
+STOP_LOSS_PCT = 0.02        
 
-SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'DOGE/USD', 'XRP/USD'] # เพิ่มเหรียญได้
+SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'DOGE/USD'] 
 TIMEFRAME = '1h'
 SIGNAL_FILE = "signals.csv"
 
@@ -56,8 +56,11 @@ def log_to_sheet(row):
         print(f"Error Sheet: {e}")
 
 def indicators(df):
+    # 1. EMA
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema200'] = df['close'].ewm(span=200).mean()
+    
+    # 2. RSI
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -65,6 +68,16 @@ def indicators(df):
     avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
     rs = avg_gain / avg_loss
     df['rsi'] = 100 - (100 / (1 + rs))
+
+    # 3. MACD (ตัวกรองโมเมนตัม) 🔥
+    exp12 = df['close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = exp12 - exp26
+    df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+    # 4. Volume MA (ตัวกรองวอลุ่ม) 🔥
+    df['vol_ma'] = df['volume'].rolling(window=20).mean()
+
     return df
 
 def save_signal(data):
@@ -78,7 +91,6 @@ def check_open_orders(symbol):
     if not os.path.exists(SIGNAL_FILE): return False
     try:
         df = pd.read_csv(SIGNAL_FILE)
-        # ตรวจสอบว่ามีสถานะ OPEN ของเหรียญนี้อยู่หรือไม่
         return not df[(df['symbol'] == symbol) & (df['status'] == 'OPEN')].empty
     except: return False
 
@@ -111,7 +123,6 @@ def update_signals():
             df.at[i, 'status'] = new_status
             updated = True
             emoji = "✅" if new_status == "TP" else "❌"
-            # คำนวณกำไร/ขาดทุนจริง (โดยประมาณ)
             pnl_text = "Profit" if new_status == "TP" else "Loss"
             
             msg = f"{emoji} <b>POSITION CLOSED</b>\nCoin: {symbol}\nResult: <b>{new_status}</b> ({pnl_text})\nClose Price: {curr_price}"
@@ -136,20 +147,31 @@ def analyze(symbol):
         signal = None
         reason = ""
 
-        # Strategy Logic
-        if prev['close'] > prev['ema200'] and prev['rsi'] > 50:
-            signal = "LONG"
-            reason = "Price > EMA200 + RSI Bull"
+        # --- SMART LOGIC (อัปเกรดใหม่) ---
+        # ต้องผ่าน 4 เงื่อนไข: EMA + RSI + MACD + Volume
+        
+        # กรองวอลุ่มก่อน (ต้องมีคนเล่น)
+        if prev['volume'] > prev['vol_ma']:
+            
+            # LONG CONDITION
+            if (prev['close'] > prev['ema200'] and 
+                prev['rsi'] > 50 and 
+                prev['macd'] > prev['signal_line']):
+                
+                signal = "LONG"
+                reason = "Uptrend + MACD Cross + Vol"
 
-        if prev['close'] < prev['ema200'] and prev['rsi'] < 50:
-            signal = "SHORT"
-            reason = "Price < EMA200 + RSI Bear"
+            # SHORT CONDITION
+            if (prev['close'] < prev['ema200'] and 
+                prev['rsi'] < 50 and 
+                prev['macd'] < prev['signal_line']):
+                
+                signal = "SHORT"
+                reason = "Downtrend + MACD Cross + Vol"
         
         if not signal: return
 
-        # --- 💰 MONEY MANAGEMENT (สูตรใหม่สำหรับทุนน้อย) ---
-        
-        # 1. คำนวณราคา TP/SL
+        # Money Management
         if signal == "LONG":
             sl = price * (1 - STOP_LOSS_PCT)
             tp = price * (1 + (STOP_LOSS_PCT * RR_RATIO))
@@ -157,27 +179,15 @@ def analyze(symbol):
             sl = price * (1 + STOP_LOSS_PCT)
             tp = price * (1 - (STOP_LOSS_PCT * RR_RATIO))
 
-        # 2. คำนวณความเสี่ยงเป็นดอลลาร์ (Risk $)
-        # ทุน $50 * 3% = เสี่ยง $1.5
         risk_usd = ACCOUNT_BALANCE * RISK_PCT_PER_TRADE 
-
-        # 3. คำนวณขนาดไม้ (Position Size)
-        # สูตร: Risk $ / ระยะ SL % = ขนาด Position ที่ต้องถือ
-        # เช่น $1.5 / 0.02 = $75
         sl_distance_pct = STOP_LOSS_PCT 
         position_size_usd = risk_usd / sl_distance_pct
-        
-        # 4. คำนวณ Margin ที่ต้องใช้ (เงินต้นจริง)
-        # $75 / Leverage 10 = $7.5
         margin_use = position_size_usd / LEVERAGE
 
-        # ตรวจสอบขนาดขั้นต่ำ (Kraken อาจมีขั้นต่ำประมาณ $10-$15 ในบางคู่)
-        # ถ้า Margin น้อยกว่า $2 ให้ขยับขึ้นมาเพื่อให้เทรดได้จริง
         if margin_use < 2:
             margin_use = 2
             position_size_usd = margin_use * LEVERAGE
 
-        # --- เปลี่ยนเวลาเป็น BANGKOK ---
         bkk_tz = pytz.timezone('Asia/Bangkok')
         now = datetime.now(bkk_tz).strftime("%Y-%m-%d %H:%M:%S")
         
@@ -189,23 +199,23 @@ def analyze(symbol):
         }
         save_signal(data)
 
-        # --- TELEGRAM MESSAGE ---
+        # Telegram
         side_emoji = "🟢" if signal == "LONG" else "🔴"
-        
         msg = f"""
-{side_emoji} <b>{signal} SIGNAL</b> 
+{side_emoji} <b>{signal} SIGNAL (Smart)</b> 
 Coin: <b>#{symbol.split('/')[0]}</b>
 Price: {price}
+Time: {now} (BKK)
 Reason: {reason}
 -----------------------------
-🛡️ <b>Risk Plan (Small Port)</b>
+🛡️ <b>Risk Plan</b>
 TP: {round(tp, 4)}
-SL: {round(sl, 4)} (Risk {RISK_PCT_PER_TRADE*100}%)
-Max Risk: ${round(risk_usd, 2)}
+SL: {round(sl, 4)}
+Risk: ${round(risk_usd, 2)}
 -----------------------------
 ⚡ <b>Execution</b>
 Lev: x{LEVERAGE}
-<b>Margin Use: ${round(margin_use, 2)}</b>
+<b>Margin: ${round(margin_use, 2)}</b>
 Size: ${round(position_size_usd, 2)}
 """
         send_telegram(msg)
@@ -216,7 +226,7 @@ Size: ${round(position_size_usd, 2)}
         print(f"Error {symbol}: {e}")
 
 def run():
-    print("--- Bot Started (Small Port Logic) ---")
+    print("--- Bot Started (Smart Strategy) ---")
     try:
         update_signals()
         for s in SYMBOLS:
@@ -229,4 +239,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
