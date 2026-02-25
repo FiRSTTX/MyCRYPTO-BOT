@@ -17,3 +17,4 @@ time,symbol,side,entry,tp,sl,status,leverage,margin,position_size,reason
 2026-02-25 09:07:26,BTC/USD,LONG,66257.9,68245.637,64932.742,SL,10,7.5,75.0,Uptrend + MACD Cross + Vol
 2026-02-25 09:07:30,ETH/USD,LONG,1936.4,1994.492,1897.672,SL,10,7.5,75.0,Uptrend + MACD Cross + Vol
 2026-02-25 09:07:33,SOL/USD,LONG,82.69,85.1707,81.0362,OPEN,10,7.5,75.0,Uptrend + MACD Cross + Vol
+2026-02-25 17:51:45,ETH/USD,LONG,1915.11,1972.5633,1876.8078,OPEN,10,7.5,75.0,Uptrend + MACD Cross + Vol
