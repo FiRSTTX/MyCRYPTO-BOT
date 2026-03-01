@@ -21,4 +21,4 @@ jobs:
         env:
           GDRIVE_API_CREDENTIALS: ${{ secrets.GDRIVE_API_CREDENTIALS }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}  # 👈 ต้องเพิ่มบรรทัดนี้!
-        run: python bot.py
+        run: python main.py
