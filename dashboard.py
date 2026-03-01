@@ -77,7 +77,7 @@ st.markdown("""
 # ==========================================
 # ⚠️ ข้อควรระวัง: ใน Streamlit Cloud ให้เอา JSON ใส่ใน Secrets
 # แต่ถ้า รัน Local ให้ใส่ชื่อไฟล์ JSON ตรงนี้ได้เลย
-SHEET_NAME = 'CryptoBot_DB'
+SHEET_NAME = 'CryptoBot_TEST_TF5MIN'
 
 @st.cache_data(ttl=60) # Cache ข้อมูล 60 วินาที ไม่โหลดถี่เกินไป
 def load_data():
