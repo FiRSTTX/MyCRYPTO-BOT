@@ -233,30 +233,56 @@ def main():
         print("💤 Outside Active Hours.")
         return
 
+# ... (ส่วนเช็คเวลา Time Filter เหมือนเดิม) ...
+
+    print(f"🔎 Scanning markets at {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC...")
+
     for symbol in SYMBOLS:
-        if symbol in active_symbols: continue 
+        if symbol in active_symbols: 
+            print(f"⏩ {symbol}: Holding position. Skip.")
+            continue 
 
         df = fetch_data(symbol)
-        if df is None: continue
+        if df is None: 
+            print(f"⚠️ {symbol}: Fetch Error")
+            continue
+            
         df = calculate_indicators(df)
         row = df.iloc[-2] 
 
-        has_volume = row['volume'] > (row['vol_ma'] * 1.2)
-        strong_trend = row['adx'] > 25
+        # --- ส่วน DEBUG ที่เพิ่มขึ้นมา ---
+        # ปริ้นท์ค่า Indicator ออกมาดูเลย ว่าทำไมถึงไม่เข้า
+        rsi_val = row['rsi7']
+        adx_val = row['adx']
+        vol_check = row['volume'] > (row['vol_ma'] * 1.2)
+        trend_long = row['close'] > row['ema200'] and row['close'] > row['vwap']
+        trend_short = row['close'] < row['ema200'] and row['close'] < row['vwap']
         
-        # 🔥 คำนวณขนาดไม้: 10% ของเงินปัจจุบัน (Compounding)
+        # ปริ้นท์สถานะ (บรรทัดนี้แหละที่จะบอกความจริง!)
+        print(f"📊 {symbol} | RSI: {rsi_val:.1f} | ADX: {adx_val:.1f} | Vol: {'✅' if vol_check else '❌'} | Trend: {'🐂' if trend_long else ('🐻' if trend_short else 'Eq')}")
+        # -------------------------------
+
+        has_volume = vol_check
+        strong_trend = adx_val > 25
+        
         trade_margin_size = current_balance * PCT_BALANCE_PER_TRADE
 
-        # ENTRY LOGIC
-        if row['close'] > row['ema200'] and row['close'] > row['vwap'] and strong_trend:
-            if row['rsi7'] < 40 and has_volume:
+        # ENTRY LOGIC (เหมือนเดิม)
+        if trend_long and strong_trend:
+            if rsi_val < 40 and has_volume:
                 sl = row['close'] * (1 - (INITIAL_SL_ROE / LEVERAGE))
                 log_new_trade(sheet, symbol, 'LONG', row['close'], sl, trade_margin_size, current_balance)
+            else:
+                # ถ้าเจอเทรนด์ แต่ RSI หรือ Volume ไม่ผ่าน ให้ปริ้นท์บอก
+                print(f"   Constructor -> 🐂 LONG Candidate but waiting for trigger (RSI<40 or Vol)")
 
-        elif row['close'] < row['ema200'] and row['close'] < row['vwap'] and strong_trend:
-            if row['rsi7'] > 60 and has_volume:
+        elif trend_short and strong_trend:
+            if rsi_val > 60 and has_volume:
                 sl = row['close'] * (1 + (INITIAL_SL_ROE / LEVERAGE))
                 log_new_trade(sheet, symbol, 'SHORT', row['close'], sl, trade_margin_size, current_balance)
+            else:
+                print(f"   Constructor -> 🐻 SHORT Candidate but waiting for trigger (RSI>60 or Vol)")
 
 if __name__ == "__main__":
     main()
+
