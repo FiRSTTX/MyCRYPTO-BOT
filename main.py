@@ -25,8 +25,8 @@ INITIAL_SL_ROE = 0.10      # เริ่มต้น SL ที่ -10% ROE
 TRAILING_STEP_ROE = 0.15   # ขยับ SL ทุกๆ กำไร 15% ROE
 
 # ⏰ Time Filter (UTC 07:00 - 22:00)
-START_HOUR_UTC = 7
-END_HOUR_UTC = 22
+START_HOUR_UTC = 0
+END_HOUR_UTC = 24
 
 # 🔐 Load Secrets from GitHub Environment
 CREDS_JSON = os.environ.get('GDRIVE_API_CREDENTIALS')
@@ -285,4 +285,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
